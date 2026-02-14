@@ -35,6 +35,3 @@ A Streamlit application designed to automate the analysis and reporting of Stude
 4. **Run the application:**
     ```bash
     streamlit run app.py
-
-Bash
-streamlit run app.py
