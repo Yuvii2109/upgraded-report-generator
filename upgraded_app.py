@@ -9,6 +9,16 @@ import sys
 import os
 import tempfile
 
+# --- INSTALL PLAYWRIGHT BROWSER (CLOUD FIX) ---
+# This checks if the browser is installed; if not, it installs it.
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+
+# Ensure the Chromium binary is installed
+subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+
 # --- CONFIGURATION ---
 st.set_page_config(page_title="EDXSO Survey Report Generator", layout="wide")
 
@@ -353,7 +363,7 @@ def generate_insights_with_gemini(api_key, stats, school_name):
 def safe_generate_pdf(html_content):
     """
     Spawns a totally separate Python process to generate the PDF.
-    This bypasses the Event Loop issues in Python 3.14.
+    Updated with Cloud-compatible arguments.
     """
     with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as tf:
         tf.write(html_content)
@@ -361,25 +371,24 @@ def safe_generate_pdf(html_content):
     
     pdf_path = html_path.replace(".html", ".pdf")
     
-    # NOTE: DYNAMIC HEIGHT CALCULATION SCRIPT
+    # NOTE: Added '--no-sandbox' and '--disable-dev-shm-usage' for Streamlit Cloud
     script = f"""
 from playwright.sync_api import sync_playwright
 import sys
 
 try:
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # CRITICAL FIX FOR CLOUD: Add args for container environment
+        browser = p.chromium.launch(
+            headless=True, 
+            args=['--no-sandbox', '--disable-dev-shm-usage']
+        )
         page = browser.new_page()
         page.set_content(open(r"{html_path}", encoding="utf-8").read())
         
-        # Calculate full body height
         body_height = page.evaluate("document.body.scrollHeight")
-        
-        # Add a little buffer (e.g., 50px) to ensure no cut-off
         final_height = body_height + 100
         
-        # Set PDF size to fit content exactly (Single Continuous Page)
-        # 1200px width covers 'max-w-5xl' nicely
         page.pdf(
             path=r"{pdf_path}", 
             width="1200px", 
@@ -389,23 +398,30 @@ try:
         )
         browser.close()
 except Exception as e:
-    print(e)
+    # Print error to stderr so it's captured by subprocess.CalledProcessError
+    print(f"INTERNAL PLAYWRIGHT ERROR: {{e}}", file=sys.stderr)
     sys.exit(1)
 """
     
     try:
+        # Run subprocess
         subprocess.run([sys.executable, "-c", script], check=True, capture_output=True)
+        
         with open(pdf_path, "rb") as f:
             pdf_bytes = f.read()
+            
+        return pdf_bytes
+
     except subprocess.CalledProcessError as e:
-        st.error(f"PDF Gen failed: {e.stderr.decode()}")
+        # Now we capture both stdout and stderr to be sure
+        error_msg = e.stderr.decode() if e.stderr else e.stdout.decode()
+        st.error(f"PDF Gen failed. Details: {error_msg}")
         return None
+        
     finally:
         # Cleanup
         if os.path.exists(html_path): os.remove(html_path)
         if os.path.exists(pdf_path): os.remove(pdf_path)
-        
-    return pdf_bytes
 
 def process_data(df, api_key, selected_schools, safe_mode, output_format):
     scale_map = {'Never': 1, 'Rarely': 2, 'Sometimes': 3, 'Often': 4, 'Always': 5}
